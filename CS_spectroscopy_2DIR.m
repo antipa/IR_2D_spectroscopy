@@ -17,21 +17,23 @@
 ps_best = 0;
 ps_worst = 100;
 %
-ps_all = []
-for n = 1:1
+ps_all = [];
+N_trials=1000;    %Number of trials to find best random sampling
+dtstamp = datestr(now(),'YYYYmmDD_HHMMSS');
+for n = 1:N_trials
     data=load('../data/2DIRdata_Nick.mat');
     
     %%% this part of code only deal with the FFT of the regular sampled data
     b = data.data_2DIR;
     
     
-    C = ones(size(b));
+
     [Ny, Nx] = size(b);
     t1_CS = zeros(1,Ny);
-    params.sampling = 'low_only'
-    params.sampling = 'low_log'
-    N_meas = 60;
-    Nmax = 120;
+    
+    params.sampling = 'low_log';
+    N_meas = 30;    %Number of measurements
+    Nmax = 120;    %Index of maxopimum measurement
     switch lower(params.sampling)
         case('uniform')
             rsamps = randsample(Ny, N_meas,false);
@@ -71,7 +73,7 @@ for n = 1:1
     
     A = @(x)C.*real(ifft(x,[],1));
     A_adj = @(y)real(fft(C.*y,[],1));
-    %%
+    %
     
     
     
@@ -90,8 +92,8 @@ for n = 1:1
     %plot spectrum
     figure(1)
     clf
-    subplot(2,2,1)
-    h = imagesc(real(spec),'XData',data.w3,'YData',w1)
+    subplot(1,2,1)
+    imagesc(real(spec),'XData',data.w3,'YData',w1);
     %axis([1930 2030 1930 2030]);
     cmin = -232;
     cmax = 56;
@@ -101,8 +103,8 @@ for n = 1:1
     ylabel('w1')
     title('Original 2D spectrum')
     
-    subplot(2,2,2)
-    h = imagesc(imag(spec_erased),'XData',data.w3,'YData',w1)
+    subplot(1,2,2)
+    h = imagesc(real(spec_erased),'XData',data.w3,'YData',w1);
     %axis([1930 2030 1930 2030]);
     caxis([cmin cmax])
     xlabel('w3')
@@ -119,17 +121,17 @@ for n = 1:1
     
     TVpars.MAXITER = 100;
     TVpars.epsilon = 1e-6;
-    loss = []
+    loss = [];
     err =[];
     resid = [];
-    params.prior = 'tv';
-    params.solver = 'hqs'
-    params.l2_grad = false % Only used in hqs. Use l2 of gradient to smooth?
+    params.prior = 'tv';   %Choose the peak sparsity prior. 'tv' works best. 
+    params.solver = 'hqs';    %Choose the solver. 'hqs' works best right now. 
+    params.l2_grad = false; % Only used in hqs. Use l2 of gradient to smooth. Leave false for now.
     
     
-    params.tau = .0004;
+    params.tau = .0004;      %Algorithm tuning parameters. Higher = more smoothing. 
     params.tau_start = .0015;
-    params.dtau = (params.tau_start - params.tau)/params.Niter
+    params.dtau = (params.tau_start - params.tau)/params.Niter;
     params.tau_wvlt = .002;
     params.tau_l2 = 1/sqrt(Ny);
     params.rho = .0005;
@@ -148,44 +150,46 @@ for n = 1:1
     l(end,:) = -1;
     Lapl= abs(F(l)).^2;
     
+    if strcmpi(params.solver,'fista')
+        grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);   %Only used if FISTA solver
+    end
     
-    
-    
+    % Setup the prox operators to denoise as we go
     switch lower(params.prior)
         case('l1')
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
-            prox = @(x,t)soft(x,t)
+            %grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
+            prox = @(x,t)soft(x,t);
             prox_handle = @(x,t)deal(soft(x,params.tau),norm(x(:),1));
-            nrm = @(x)norm(x(:),1)
+            nrm = @(x)norm(x(:),1);
         case('tv')
-            prox = @(x,t)TV2DFista(x, t, -3000,3000,TVpars)
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
-            nrm = @(x)TVnorm(x);
-            prox_handle = @(x)deal(TV2DFista(x, params.tau, -3000,3000,TVpars), TVnorm(x))
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
+            prox = @(x,t)TV2DFista_2DIR(x, t, -3000,3000,TVpars);
+            
+            nrm = @(x)TVnorm_2DIR(x);
+            prox_handle = @(x)deal(TV2DFista(x, params.tau, -3000,3000,TVpars), TVnorm(x));
+            %grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
         case('l1_cplx')
             prox = @(x,t)soft_spectral(x,t);
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
+            %grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
         case('l2')
-            params.l2_grad = true
-            grad_err_handle = @(x)deal(norm(A(x) - b_cs,'fro'),Fh((C.^2 + params.tau_l2*Lapl).*F(x)) - Atb);
+            params.l2_grad = true;
+            %grad_err_handle = @(x)deal(norm(A(x) - b_cs,'fro'),Fh((C.^2 + params.tau_l2*Lapl).*F(x)) - Atb);
             prox_handle = @(x)deal(x,0);
         case('l2_tv')
-            params.l2_grad = true
-            grad_err_handle = @(x)deal(norm(A(x) - b_cs,'fro'),Fh((C.^2 + params.tau_l2*Lapl).*F(x)) - Atb);
-            prox = @(x,t)TV2DFista(x, t, -3000,3000,TVpars)
+            params.l2_grad = true;
+            %grad_err_handle = @(x)deal(norm(A(x) - b_cs,'fro'),Fh((C.^2 + params.tau_l2*Lapl).*F(x)) - Atb);
+            prox = @(x,t)TV2DFista(x, t, -3000,3000,TVpars);
             prox_handle = @(x)deal(TV2DFista(x, params.tau, -3000,3000,TVpars), TVnorm(x));
         case('wvlt_tv')
-            nopad = @(x)x
+            nopad = @(x)x;
             wav_type = 'db9';
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
+            %grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
             prox_handle = @(x)deal(.5*wavelet_detail_denoise(x,4,wav_type,[2,3],params.tau_wvlt,-500,500,nopad)+...
                 .5*TV2DFista(x,params.tau,-3000,3000,TVpars),TVnorm(x));
         case('wvlt')
-            nopad = @(x)x
+            nopad = @(x)x;
             wav_type = 'db9';
-            grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
-            prox_handle = @(x)deal(.5*wavelet_detail_denoise(x,4,wav_type,[3],params.tau_wvlt,-500,500,nopad),TVnorm(x));
+            %grad_err_handle = @(x)linear_gradient(x,A,A_adj,b_cs);
+            prox_handle = @(x)deal(.5*wavelet_detail_denoise(x,4,wav_type,3,params.tau_wvlt,-500,500,nopad),TVnorm(x));
             
     end
     
@@ -195,19 +199,21 @@ for n = 1:1
     
     
     
-    figure(3)
-    clf
-    imagesc(spec)
-    colorbar
-    axis image
-    caxis([cmin, cmax])
+%     figure(3)
+%     clf
+%     imagesc(spec)
+%     colorbar
+%     axis image
+%     caxis([cmin, cmax])
+    
+
+    gt_spec = real(spec(1:2:end,:));
     
     h1 = figure(2);
     clf
-    gt_spec = real(spec(1:2:end,:));
-    
-    
     drawnow
+    
+    % Options for FISTA solver
     options.fighandle = h1;
     options.stepsize = .95;
     options.convTol = 0;
@@ -221,7 +227,7 @@ for n = 1:1
     options.known_input = 1;
     options.print_interval = 10;
     options.xin = spec;
-    ps = []
+    ps = [];
     
     switch lower(params.solver)
         case('fista')
@@ -234,6 +240,7 @@ for n = 1:1
             subplot(2,2,1)
             imagesc(gt_spec(1:floor(Ny/2),:),'XData',data.w3,'YData',w1)
             caxis([cmin cmax])
+            title('ground truth (no subsampling)')
             xlabel('w3')
             ylabel('w1')
             tic
@@ -257,7 +264,7 @@ for n = 1:1
                     caxis([cmin cmax])
                     xlabel('w3')
                     ylabel('w1')
-                    title(['iter: ', num2str(k)])
+                    title(['Reconstructed from subsampled, iter: ', num2str(k)])
                     drawnow
                     
                     %             subplot(2,2,3)
@@ -279,12 +286,12 @@ for n = 1:1
     end
     
     %%
-    f4 = figure(4)
-    clf
+    f4 = figure(4);
+    clf;
     
     
     %h = imagesc(spec,'XData',data.w3,'YData',w1)
-    Nlevels = 30
+    Nlevels = 30;
     %gt_spec = real(spec_orig);
     
     L = linspace(min(gt_spec(:)),max(gt_spec(:)),Nlevels);
@@ -301,10 +308,10 @@ for n = 1:1
     xlabel('w3')
     ylabel('w1')
     title('Original 2D spectrum')
-    ac = 'w'
-    set(gca,'color',ac)
-    set(gcf,'color','w')
-    cm = 'parula'
+    ac = 'w';
+    set(gca,'color',ac);
+    set(gcf,'color','w');
+    cm = 'parula';
     colormap(cm)
     
     subplot(2,3,2)
@@ -329,20 +336,20 @@ for n = 1:1
     
     parfields = fieldnames(params);
     str = '';
-    for n = 1:length(parfields)
-        param_val = params.(parfields{n})
-        if mod(n,3)==0
+    for nn = 1:length(parfields)
+        param_val = params.(parfields{nn});
+        if mod(nn,3)==0
             esc_char = '\n';
         else
             esc_char = ', ';
         end
         if isnumeric(param_val)
-            str = cat(2,str,[parfields{n},' = ',num2str(param_val,'%.1e'),esc_char]);
+            str = cat(2,str,[parfields{nn},' = ',num2str(param_val,'%.1e'),esc_char]);
             
         elseif islogical(param_val)
-            str = cat(2,str,[parfields{n},' = ',num2str(double(param_val),'%i'),esc_char]);
+            str = cat(2,str,[parfields{nn},' = ',num2str(double(param_val),'%i'),esc_char]);
         else
-            str = cat(2,str,[parfields{n},' = ',param_val,esc_char]);
+            str = cat(2,str,[parfields{nn},' = ',param_val,esc_char]);
         end
     end
     
@@ -383,27 +390,31 @@ for n = 1:1
     colorbar
     title('Recon')
     
+    
+    % Saves results of trials to find best/worst sampling pattern. 
     if ps(end)<ps_worst
         worst_inds = rsamps;
         b_worst = b_cs;
         recon_worst = result_out;
-        save('./results/worst.mat')
-        export_fig(f4,'./results/worst.pdf')
+        file_worst = ['../results/worst_',dtstamp];
+        save([file_worst,'.mat'])
+        export_fig(f4,[file_worst,'.pdf'])
         ps_worst = ps(end);
     end
     if ps(end)>ps_best
         best_inds = rsamps;
         b_best = b_cs;
         recon_best = result_out;
-        save('./results/best.mat')
-        export_fig(f4,'./results/best.pdf')
+        file_best = ['../results/best_',dtstamp];
+        save([file_best,'.mat'])
+        export_fig(f4,[file_best,'.pdf'])
         ps_best = ps(end);
     end
     ps_all = cat(1,ps_all,ps(end));
 end
 %%
-load('./results/best.mat')
-f4 = figure(5)
+load('/Users/nick.antipa/Documents/UCSD/Research/Spectroscopy/results/best_20210604_161945.mat')
+f4 = figure(5);
 clf
 
 
@@ -416,7 +427,7 @@ cmin = min(L);
 cmax = max(L);
 
 
-no_recon_spec = recon_worst
+no_recon_spec = recon_worst;
 
 psnr_norecon = psnr(no_recon_spec,gt_spec,max(gt_spec(:)));
 subplot(2,3,1)
@@ -429,7 +440,7 @@ title('Original 2D spectrum')
 ac = 'w';
 set(gca,'color',ac)
 set(gcf,'color','w')
-cm = 'parula'
+cm = 'parula';
 colormap(cm)
 
 subplot(2,3,2)
@@ -455,7 +466,7 @@ ylabel('w1')
 parfields = fieldnames(params);
 str = '';
 for n = 1:length(parfields)
-    param_val = params.(parfields{n})
+    param_val = params.(parfields{n});
     if mod(n,3)==0
         esc_char = '\n';
     else
@@ -507,6 +518,59 @@ xlabel('w3')
 ylabel('w1')
 colorbar
 title('Recon')
+
+
+%%
+
+f4 = figure(9);
+%h = imagesc(spec,'XData',data.w3,'YData',w1)
+Nlevels = 30;
+%gt_spec = real(spec_orig);
+
+L = linspace(min(gt_spec(:)),max(gt_spec(:)),Nlevels);
+cmin = min(L);
+cmax = max(L);
+
+
+no_recon_spec = recon_worst;
+
+psnr_norecon = psnr(no_recon_spec,gt_spec,max(gt_spec(:)));
+subplot(1,3,1)
+contour(data.w3, w1, gt_spec,L)
+axis([1930 2030 1930 2030]);
+caxis([cmin cmax])
+xlabel('w3')
+ylabel('w1')
+title('Original 2D spectrum')
+ac = 'w';
+set(gca,'color',ac)
+set(gcf,'color','w')
+cm = 'parula';
+colormap(cm)
+
+subplot(1,3,2)
+%h = imagesc(result,'XData',data.w3,'YData',w1)
+contour(data.w3, w1, no_recon_spec,L)
+axis([1930 2030 1930 2030]);
+caxis([cmin cmax])
+set(gca,'color',ac')
+xlabel('w3')
+ylabel('w1')
+title(['Worst recon, psnr=',num2str(ps_worst,'%.2f'),' dB'])
+
+subplot(1,3,3)
+%h = imagesc(result,'XData',data.w3,'YData',w1)
+contour(data.w3, w1, result_out,L)
+axis([1930 2030 1930 2030]);
+caxis([cmin cmax])
+set(gca,'color',ac')
+xlabel('w3')
+ylabel('w1')
+title('Sparse reconstruction from subsampled data')
+
+
+
+
 %%
 
 samp_worst = zeros(1,Ny);
@@ -538,5 +602,49 @@ caxis([-20 20])
 % legend(['worst pattern, N = ',num2str(nnz(t1_CS),'%i')],...
 %     ['best pattern, N = ',num2str(nnz(t1_CS),'%i')])
 hold off
+
+samp_worst = zeros(1,Ny);
+samp_worst(worst_inds) = 1;
+
+
+%%
+cmap = parula(255);
+%cmap(128,:) = [0 0  0];
+samp_full = ones(1,Ny);
+figure(7)
+clf
+subplot(2,2,1)
+stem(samp_full,'k.')
+xlim([0 Nmax])
+axis off
+%title('Full sampling pattern')
+
+subplot(2,2,2)
+stem(t1_CS,'k.')
+xlim([0 Nmax])
+axis off
+%title('sub-sampling pattern')
+
+subplot(2,2,3)
+imagesc(b(1:Nmax,:))
+title('Original measurement')
+caxis([-20 20])
+colormap(parula)
+axis off
+
+subplot(2,2,4)
+imagesc(b_cs(1:Nmax,:))
+title('Sub-sampled measurement')
+caxis([-20 20])
+
+axis off
+
+colormap(gca,cmap)
+
+% legend(['worst pattern, N = ',num2str(nnz(t1_CS),'%i')],...
+%     ['best pattern, N = ',num2str(nnz(t1_CS),'%i')])
+hold off
+
+
 
 
